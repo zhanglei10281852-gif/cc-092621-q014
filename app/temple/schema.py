@@ -199,6 +199,136 @@ CREATE TABLE IF NOT EXISTS restoration_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_restoration_events_resource ON restoration_events(resource_type,resource_id,id);
+CREATE TABLE IF NOT EXISTS ash_containers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    container_code TEXT NOT NULL UNIQUE,
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    status TEXT NOT NULL DEFAULT 'sealed' CHECK(status IN ('sealed','in_transit','stored','merged','disposed')),
+    current_custodian TEXT NOT NULL,
+    current_weight_grams REAL NOT NULL CHECK(current_weight_grams >= 0),
+    storage_deadline TEXT NOT NULL,
+    sealed_at TEXT NOT NULL,
+    sealed_by TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ash_containers_status ON ash_containers(temple_id,status,storage_deadline);
+CREATE TABLE IF NOT EXISTS ash_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_code TEXT NOT NULL UNIQUE,
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    hall_id INTEGER NOT NULL REFERENCES worship_halls(id),
+    container_id INTEGER NOT NULL REFERENCES ash_containers(id),
+    weight_grams REAL NOT NULL CHECK(weight_grams > 0),
+    sealed_by TEXT NOT NULL,
+    sealed_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disposed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ash_batches_hall ON ash_batches(temple_id,hall_id,sealed_at);
+CREATE TABLE IF NOT EXISTS ash_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_key TEXT NOT NULL UNIQUE,
+    operation_type TEXT NOT NULL CHECK(operation_type IN ('seal','merge','reweigh','loss_adjustment','disposal')),
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    loss_grams REAL NOT NULL DEFAULT 0 CHECK(loss_grams >= 0),
+    actor TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    payload_digest TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ash_disposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    disposal_code TEXT NOT NULL UNIQUE,
+    container_id INTEGER NOT NULL UNIQUE REFERENCES ash_containers(id),
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    operation_id INTEGER NOT NULL REFERENCES ash_operations(id),
+    disposed_weight_grams REAL NOT NULL CHECK(disposed_weight_grams >= 0),
+    method TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    disposed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ash_container_contents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    container_id INTEGER NOT NULL REFERENCES ash_containers(id),
+    batch_id INTEGER NOT NULL REFERENCES ash_batches(id),
+    origin_content_id INTEGER REFERENCES ash_container_contents(id),
+    operation_id INTEGER NOT NULL REFERENCES ash_operations(id),
+    weight_grams REAL NOT NULL CHECK(weight_grams > 0),
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','merged_out','disposed')),
+    merged_into_container_id INTEGER REFERENCES ash_containers(id),
+    disposal_id INTEGER REFERENCES ash_disposals(id),
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ash_contents_container ON ash_container_contents(container_id,status);
+CREATE INDEX IF NOT EXISTS idx_ash_contents_batch ON ash_container_contents(batch_id,status);
+CREATE TABLE IF NOT EXISTS ash_weight_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id INTEGER NOT NULL REFERENCES ash_operations(id),
+    container_id INTEGER NOT NULL REFERENCES ash_containers(id),
+    content_id INTEGER REFERENCES ash_container_contents(id),
+    batch_id INTEGER REFERENCES ash_batches(id),
+    entry_type TEXT NOT NULL CHECK(entry_type IN ('seal_in','merge_out','merge_in','reweigh','loss_adjustment','disposal_out')),
+    delta_grams REAL NOT NULL,
+    resulting_weight_grams REAL NOT NULL CHECK(resulting_weight_grams >= 0),
+    actor TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ash_ledger_container ON ash_weight_ledger(container_id,id);
+CREATE INDEX IF NOT EXISTS idx_ash_ledger_operation ON ash_weight_ledger(operation_id,id);
+CREATE TABLE IF NOT EXISTS ash_handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    handover_key TEXT NOT NULL UNIQUE,
+    container_id INTEGER NOT NULL REFERENCES ash_containers(id),
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    from_custodian TEXT NOT NULL,
+    to_custodian TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','cancelled','expired')),
+    container_status_before TEXT NOT NULL,
+    confirm_deadline TEXT NOT NULL,
+    initiated_by TEXT NOT NULL,
+    initiated_at TEXT NOT NULL,
+    from_confirmed_at TEXT,
+    to_confirmed_at TEXT,
+    confirmed_at TEXT,
+    closed_at TEXT,
+    close_reason TEXT NOT NULL DEFAULT '',
+    payload_digest TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_ash_handovers_container ON ash_handovers(container_id,id);
+CREATE INDEX IF NOT EXISTS idx_ash_handovers_pending ON ash_handovers(status,confirm_deadline);
+CREATE TABLE IF NOT EXISTS ash_anomalies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key TEXT NOT NULL,
+    anomaly_type TEXT NOT NULL CHECK(anomaly_type IN ('storage_overdue','handover_timeout','weight_mismatch','chain_broken')),
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    container_id INTEGER REFERENCES ash_containers(id),
+    handover_id INTEGER REFERENCES ash_handovers(id),
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','resolved')),
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    opened_at TEXT NOT NULL,
+    acknowledged_at TEXT,
+    resolved_at TEXT,
+    resolved_by TEXT,
+    resolution TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ash_anomalies_open ON ash_anomalies(dedupe_key) WHERE status IN ('open','acknowledged');
+CREATE INDEX IF NOT EXISTS idx_ash_anomalies_status ON ash_anomalies(status,anomaly_type,opened_at);
+CREATE TABLE IF NOT EXISTS ash_container_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    container_id INTEGER NOT NULL REFERENCES ash_containers(id),
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ash_container_events ON ash_container_events(container_id,id);
 '''
 
 
