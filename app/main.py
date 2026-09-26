@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 from app.api import audit, auth, maintenance, roles, system, users
 from app.core.errors import DomainError
 from app.database import close_connection, get_connection, init_db
+from app.temple.ash_router import router as ash_router
+from app.temple.ash_schema import ensure_ash_schema
 from app.temple.router import router as temple_router
 from app.temple.operations_router import router as operations_router
 from app.temple.schema import ensure_temple_schema
@@ -17,7 +19,9 @@ from app.temple.schema import ensure_temple_schema
 async def lifespan(app: FastAPI):
     del app
     init_db()
-    ensure_temple_schema(get_connection())
+    connection = get_connection()
+    ensure_temple_schema(connection)
+    ensure_ash_schema(connection)
     yield
     close_connection()
 
@@ -42,6 +46,7 @@ app.include_router(system.router)
 app.include_router(maintenance.router)
 app.include_router(temple_router)
 app.include_router(operations_router)
+app.include_router(ash_router)
 
 
 @app.get("/")

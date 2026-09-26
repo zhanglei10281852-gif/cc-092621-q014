@@ -7,12 +7,15 @@ from fastapi.testclient import TestClient
 
 from app.database import database_path, get_connection, init_db
 from app.main import app
+from app.temple.ash_schema import ensure_ash_schema
 from app.temple.schema import ensure_temple_schema
 
 
 def command_init() -> int:
     init_db()
-    ensure_temple_schema(get_connection())
+    connection = get_connection()
+    ensure_temple_schema(connection)
+    ensure_ash_schema(connection)
     print(json.dumps({"database": str(database_path()), "status": "initialized"}, ensure_ascii=False))
     return 0
 
@@ -21,6 +24,7 @@ def command_check() -> int:
     init_db()
     connection = get_connection()
     ensure_temple_schema(connection)
+    ensure_ash_schema(connection)
     result = {
         "database": str(database_path()),
         "integrity": connection.execute("PRAGMA integrity_check").fetchone()[0],
@@ -96,6 +100,64 @@ def command_temple_demo() -> int:
     return 0 if [seeded.status_code, authorization.status_code, observation.status_code, started.status_code] == [200, 201, 202, 200] else 1
 
 
+def command_ash_demo() -> int:
+    with TestClient(app) as client:
+        seeded = client.post("/api/temple/demo/seed")
+        if seeded.status_code != 200:
+            print(seeded.text)
+            return 1
+        containers = []
+        for code in ("ash-cask-a", "ash-cask-b", "ash-cask-m"):
+            response = client.post("/api/temple/ash/containers", json={
+                "temple_code": "lingyun-temple", "code": code, "capacity_grams": 50_000, "actor": "cli-demo",
+            })
+            if response.status_code != 201:
+                print(response.text)
+                return 1
+            containers.append(code)
+        packs = [
+            client.post("/api/temple/ash/packs", json={
+                "temple_code": "lingyun-temple", "hall_code": "main-hall",
+                "container_code": "ash-cask-a", "weight_grams": 5_200,
+                "handler": "monk-zhang", "seal_code": "demo-seal-a", "batch_code": "DEMO-ASH-B-A",
+            }),
+            client.post("/api/temple/ash/packs", json={
+                "temple_code": "lingyun-temple", "hall_code": "main-hall",
+                "container_code": "ash-cask-b", "weight_grams": 3_000,
+                "handler": "monk-zhang", "seal_code": "demo-seal-b", "batch_code": "DEMO-ASH-B-B",
+            }),
+        ]
+        merge = client.post("/api/temple/ash/merges", json={
+            "temple_code": "lingyun-temple", "container_code": "ash-cask-m",
+            "source_container_codes": ["ash-cask-a", "ash-cask-b"],
+            "weight_grams": 8_100, "loss_reason": "合并扬尘损耗100克",
+            "actor": "keeper-li", "batch_code": "DEMO-ASH-M-1",
+        })
+        transfer = client.post("/api/temple/ash/transfers", json={
+            "temple_code": "lingyun-temple", "handover_code": "DEMO-HO-1",
+            "container_code": "ash-cask-m", "from_party": "keeper-li", "to_party": "driver-wang",
+            "to_location": "处置暂存间", "actor": "keeper-li",
+        })
+        confirm = client.post("/api/temple/ash/transfers/DEMO-HO-1/confirm", json={"confirmed_by": "driver-wang"})
+        disposal = client.post("/api/temple/ash/disposals", json={
+            "temple_code": "lingyun-temple", "container_code": "ash-cask-m",
+            "disposal_code": "DEMO-DSP-1", "actor": "manager", "witness": "abbot",
+        })
+        trace = client.get("/api/temple/ash/disposals/DEMO-DSP-1/trace")
+    status_codes = [item.status_code for item in (*packs, merge, transfer, confirm, disposal, trace)]
+    result = {
+        "packs": [item.status_code for item in packs],
+        "merge": merge.status_code,
+        "transfer": transfer.status_code,
+        "confirm": confirm.status_code,
+        "disposal": disposal.status_code,
+        "trace": trace.status_code,
+        "weight_check": trace.json().get("weight_check") if trace.status_code == 200 else None,
+    }
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if status_codes == [201, 201, 201, 201, 200, 201, 200] else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="temple-stewardship", description="寺院香火与修缮协同服务维护入口")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -103,12 +165,14 @@ def main() -> int:
     subparsers.add_parser("check-db", help="检查数据库完整性")
     subparsers.add_parser("smoke", help="执行本地 API 冒烟检查")
     subparsers.add_parser("temple-demo", help="执行香火隐患识别与通风处置演示")
+    subparsers.add_parser("ash-demo", help="执行香灰封装、合并、交接与最终处置追溯演示")
     args = parser.parse_args()
     return {
         "init-db": command_init,
         "check-db": command_check,
         "smoke": command_smoke,
         "temple-demo": command_temple_demo,
+        "ash-demo": command_ash_demo,
     }[args.command]()
 
 
